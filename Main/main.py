@@ -77,20 +77,51 @@ def extract_bits (bit, sbit_loc, bit_mask):
 
 # --- THE LOGIC ---
 
+#FROM C Header, pass this to return as needed
+'''
+    BITS 29 - 24 is type
+    '' 16 - 23 is manufacturer
+    '' 10-15 is class
+    '' 6 - 9 is index
+    and 0 - 5 is device id
+'''
+TYPE_POS = 24
+MANU_POS = 16
+CLASS_POS = 10
+INDEX_POS = 6
+DEVID_POS = 0
+
+def get_telemetry_info(arb_id):
+    return {
+        "type": (arb_id >> TYPE_POS) & 0x1F,    #5 bits
+        "manu": (arb_id >> MANU_POS) & 0xFF,    #8 bits
+        "class": (arb_id >> CLASS_POS) & 0x3F,  #6 bits
+        "index": (arb_id >> INDEX_POS) & 0x0F,  #4 bits
+        "dev_id": (arb_id >> DEVID_POS) & 0x3F  #6 bits
+    }
+
 #1. Create a queue
     
 telemetry_queue = queue.Queue()
 
 def can_worker():
+
     try: 
-        # Create a filter that ONLY lets through "Status 1" (where faults live)
-        # This ignores the "Heartbeat" and "Encoder" data entirely at the hardware level.
+        # Constants from  C header - change when DBC is implemented
+        '''
+
+        
+         Creates a filter that ONLY lets through "Status 1" (where faults live)
+         This ignores the "Heartbeat" and "Encoder" data entirely at the hardware level.
     
-        # This ID represents: Type(02) + Mfr(05) + API(061) + DeviceID(00)
-        # Binary:             0000 0010 + 0000 0101 + 0011 1101 + 0000 0000
-        #HEX:                   0   2     0      5      3   D       0   0x
+         This ID represents: Type(02) + Mfr(05) + API(061) + DeviceID(00)
+         Binary:             0000 0010 + 0000 0101 + 0011 1101 + 0000 0000
+        HEX:                   0   2     0      5      3   D       0   0x
+        '''
         target_id = 0x02053D00
 
+
+        #from CAN, we only want
         filters = [
             {
                 "can_id": target_id, 
@@ -98,29 +129,32 @@ def can_worker():
                 "extended": True}
             ]
         
+    #IMPORTANT: MAKE SURE YOU RAN THE IP LINK CAN0... LINE BEFORE THIS
         bus = can.interface.Bus(channel='can0', bustype='socketcan', can_filters=filters)
     except:
-        print("BUS NOT FOUND!")
+        print("BUS NOT FOUND! (did you run sudo ip link...)?")
         bus = None
     while True:
-        # This BLOCKS. It stays here until a message arrives.
-        # More efficient than polling.
+        # This BLOCKS. It stays here until a message arrives, instead of always polling
         msg = bus.recv(timeout=1.0) 
         if msg:
-            device_id = msg.arbitration_id & 0x3F
-            api_id = (msg.arbitration_id >> 6) & 0x3FF
-            
-            if api_id == 0x61:
-                faults = (msg.data[1] << 8) | msg.data[0]
-                # Put the data into the queue for the UI to grab
-                telemetry_queue.put((device_id, faults))
-            if api_id == 0x62:
-                #.... for all
-                telemetry_queue.put((device_id, faults))
+            info = get_telemetry_info(msg.arbitration_id)
+                #TELEMETRY:
+            if info["class"]== 1:
+                if info["index"] == 3:
+                    #TEMP: index = 3
+                    print(f"Temp, {msg.data}") 
+                if info["index"] == 4:
+                    print (f"VolCurr = {msg.data}")
+#"faults" are usually bit-flags hidden inside the data bytes of Status 0 (Index 0)
+                #telemetry_queue.put((device_id, faults)) # - gets passed into update_telemetry_ui
                 
+
     # 2. Start the thread before the UI loop
 thread = threading.Thread(target=can_worker, daemon=True)
 thread.start()
+
+
 
 # 3. Update the UI function to just check the Queue
 def update_telemetry_ui():
@@ -151,6 +185,7 @@ dpg.set_primary_window("Primary Window", True)
 
 # Manual Render Loop (Crucial for live telemetry)
 while dpg.is_dearpygui_running():
+    update_telemetry_ui
     dpg.render_dearpygui_frame()
 
 dpg.destroy_context()
