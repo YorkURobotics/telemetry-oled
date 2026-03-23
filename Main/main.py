@@ -100,6 +100,9 @@ def get_telemetry_info(arb_id):
         "dev_id": (arb_id >> DEVID_POS) & 0x3F  #6 bits
     }
 
+#_ _ _ _ _ | _ _ _ _ _ _ _ | _ _ _ _ _ _ | _ _ _ _ | _ _ _ _ _ _ |
+#type           Menu           Class        Index   Device ID
+
 #1. Create a queue
     
 telemetry_queue = queue.Queue()
@@ -129,7 +132,6 @@ def can_worker():
                 "extended": True}
             ]
         
-    #IMPORTANT: MAKE SURE YOU RAN THE IP LINK CAN0... LINE BEFORE THIS
         bus = can.interface.Bus(channel='can0', bustype='socketcan', can_filters=filters)
     except:
         print("BUS NOT FOUND! (did you run sudo ip link...)?")
@@ -140,12 +142,14 @@ def can_worker():
         if msg:
             info = get_telemetry_info(msg.arbitration_id)
                 #TELEMETRY:
-            if info["class"]== 1:
-                if info["index"] == 3:
-                    #TEMP: index = 3
-                    print(f"Temp, {msg.data}") 
-                if info["index"] == 4:
-                    print (f"VolCurr = {msg.data}")
+            if msg.arbitration_id == 0x02080546:    #iD for Voltage / Current 
+                    print (f"VolCurr = {msg.data} from device {info["dev_id"]}")
+            if info["type"]== 2:
+                if info["manu"] == 8:
+                    #for all sparkmaxes, 0x0208 or above
+                    if info["index"] == 3:  #temperature, for example
+                        print(f"TEMP: {msg.arbitration_id} from device {info["dev_id"]}")
+                    
 #"faults" are usually bit-flags hidden inside the data bytes of Status 0 (Index 0)
                 #telemetry_queue.put((device_id, faults)) # - gets passed into update_telemetry_ui
                 
