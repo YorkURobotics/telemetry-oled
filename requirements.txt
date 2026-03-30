@@ -1,0 +1,6 @@
+packaging==26.0
+PySide6==6.11.0
+PySide6_Addons==6.11.0
+PySide6_Essentials==6.11.0
+python-can==4.6.1
+shiboken6==6.11.0
