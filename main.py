@@ -1,45 +1,74 @@
 import sys
 import can
-import threading
-#import struct       #ONLY IF FLOATS ARE IN THE PAYLOAD
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QGridLayout)
-from PySide6.QtCore import Qt, Signal, QObject
+from PySide6.QtCore import QThread, Qt, Signal, QObject, QTimer
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtGui import QColor # <--- The missing piece
+from PySide6.QtGui import QColor
 
+#this commworker handles all of the CAN communication. 
 class CommWorker(QObject):
-    telemetry_received = Signal(int, dict, list)
+    error_status = Signal(int, int)
+    telemetry_received = Signal(dict, list)
 
-    def run(self):
+    def run(self):     
         try:
-            # Filter logic: 
-            # We want Class 1 (Telemetry) and Class 63 (Heartbeat).
-            # To keep it simple, we filter for Type=2, Manu=8.
-            # Mask 0x1F000000 checks Type, 0x00FF0000 checks Manu.
-            target_id = (2 << 24) | (8 << 16) 
-            mask = 0x1FFF0000 
-            
-            filters = [{"can_id": target_id, "can_mask": mask, "extended": True}]
-            #On mac, need to use UDP (dependency is removed from requirements.txt)
-            bus = can.interface.Bus(channel='224.0.0.1', interface='udp_multicast',filter=filters)
+            #Masks out only communication from SPARK devices.
+            target_id = (2 << 24) | (8 << 16)
+            mask = 0x1FFF0000   
+
+            filters = [{
+                "can_id": target_id,
+                "can_mask": mask,
+                "extended": True
+            }]
+
+            bus = can.interface.Bus(
+                interface='slcan',
+                channel='/dev/tty.usbmodemXXXX',
+                bitrate=1000000,
+                filters=filters
+            )
         except Exception as e:
             print(f"CAN Bus Error: {e}")
             return
+        self.running = True
 
-        while True:
-            msg = bus.recv(timeout=1.0)
+        while self.running:
+            msg = bus.recv(timeout=0.01)
             print(msg)
-            if msg:
-                # Bit mapping from your whiteboard
-                info = {
-                    "dev_id": (msg.arbitration_id >> 0) & 0x3F,
-                    "index":  (msg.arbitration_id >> 6) & 0x0F,
-                    "class":  (msg.arbitration_id >> 10) & 0x3F,
-                    "manu":   (msg.arbitration_id >> 16) & 0xFF,
-                    "type":   (msg.arbitration_id >> 24) & 0x07, 
-                }
-                self.telemetry_received.emit(msg.arbitration_id, info, list(msg.data))
+            if msg is None:
+                continue
+            
+            can_id = msg.arbitration_id
+            info = {
+                "dev_id": (can_id >> 0) & 0x3F, #device ID of sparkmax [gets passed to btn]
+                "index":  (can_id >> 6) & 0x0F, 
+                "class":  (can_id >> 10) & 0x3F,
+                "manu":   (can_id >> 16) & 0xFF,
+                "type":   (can_id >> 24) & 0x1F,
+            }
+            
+            if info["class"] == 61:
+                if info["index"] == 0:  #error class is 61, index 0 (from ref sheet)
+                    error_code = msg.data[0]    #looks like the message sends error code (error code is mapped to LEDs in ref.)
+                    self.error_status.emit(info["dev_id"], error_code) #sends values to update_led_status
+            self.telemetry_received.emit(info, list(msg.data))
+    def stop(self):
+            self.running = False
+            
+
+LED_MAP = {
+    1: ("red", "blue", "slow"),
+    2: ("red", "cyan", "slow"),
+    3: ("red", "green", "slow"),
+    4: ("red", "magenta", "slow"),
+    5: ("red", "yellow", "slow"),
+    6: ("cyan", "cyan", "normal"),
+    7: ("cyan", "cyan", "solid"),
+    8: ("red", "cyan", "normal"),
+    9: ("green", "green", "normal"),
+}
 
 class RoverDash(QMainWindow):
     def __init__(self):
@@ -52,25 +81,21 @@ class RoverDash(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
+
         # --- LEFT SIDE: MOTOR STATUS ---
         left_column = QVBoxLayout()
         self.motor_grid = QGridLayout()
         self.motor_buttons = {}
         
-        for i in range(11):     #replace this with the exact dev ids once you can get them
+        for i in range(12): #create buttons btn1 - 12
             dev_id = i + 1
-            btn = QPushButton(f"M{dev_id}")
+            btn = QPushButton(f"axis{dev_id}")
             btn.setFixedSize(60, 60)
-            btn.setStyleSheet(self.get_style("red")) # Default to red until heartbeat
+            # btn.setStyleSheet(self.get_style("red")) # Default to red until heartbeat
             self.motor_grid.addWidget(btn, i // 4, i % 4)
             self.motor_buttons[dev_id] = btn
 
-        btn12 = QPushButton("0x12") #e.g. button with dev id of 12
-        btn12.setFixedSize(60,60)
-        btn12.setStyleSheet(self.get_style("red")) # Default to red until heartbeat  
-        self.motor_grid.addWidget(btn12)
-        self.motor_buttons[12]=btn12
-        
+
         left_column.addLayout(self.motor_grid)
         main_layout.addLayout(left_column, 1)
 
@@ -78,7 +103,7 @@ class RoverDash(QMainWindow):
         graph_column = QVBoxLayout()
         self.chart_grid = QGridLayout()
         self.series_temp = QLineSeries()
-        self.chart_temp_view = self.create_graph("Temp (°C)", self.series_temp)
+        self.chart_temp_view = self.create_graph("Temp (Â°C)", self.series_temp)
         self.chart_grid.addWidget(self.chart_temp_view)
 
         self.series_current = QLineSeries()  #cv represents current - voltage
@@ -99,14 +124,84 @@ class RoverDash(QMainWindow):
 
         # --- WORKER THREAD ---
         self.worker = CommWorker()
-        self.worker_thread = threading.Thread(target=self.worker.run, daemon=True)
+        self.thread = QThread()
+
+        self.worker.moveToThread(self.thread)
+
+        self.thread.started.connect(self.worker.run)
+
+        self.worker.error_status.connect(self.update_led_status)
         self.worker.telemetry_received.connect(self.process_can_data)
-        self.worker_thread.start()
+
+        self.button_states = {}
+        self.blink_timers = {}
+
+        self.thread.start()
+
+        # --- LOGIC ---
+        
+   
+    def update_led_status(self, dev_id, error_code):
+            color1, color2, speed = LED_MAP.get(error_code, ("red", None, "solid"))
+
+            btn = self.motor_buttons.get(dev_id)
+            if btn is None:
+                return
+
+            if dev_id in self.blink_timers:
+                self.blink_timers[dev_id].stop()
+                del self.blink_timers[dev_id]
+
+            if speed == "solid" or color2 is None:
+                btn.setStyleSheet(self.get_style(color1))
+                return
+
+            intervals = {
+                "normal": 250,
+                "slow": 500,
+            }
+
+            interval = intervals.get(speed, 500)
+
+            state = 1
+            
+            def blink():
+                nonlocal state
+                state = not state
+
+                color = color1 if state else color2
+                btn.setStyleSheet(self.get_style(color))
+
+            timer = QTimer(self)
+            timer.timeout.connect(blink)
+            timer.start(interval)
+
+            self.blink_timers[dev_id] = timer
+            blink()
 
     def get_style(self, color):
-        hex_color = "#00ff88" if color == "green" else "#ff3333"
-        return f"background-color: {hex_color}; color: black; border-radius: 30px; font-weight: bold; border: 1px solid white;"
+        colors = {
+            "red": "#ff3333",
+            "green": "#00ff88",
+            "blue": "#3399ff",
+            "cyan": "#00e5ff",
+            "magenta": "#ff33cc",
+            "yellow": "#ffff33",
+            "off": "#222222",
+        }
 
+        hex_color = colors.get(color, "#ff3333")
+
+        return f"""
+        QPushButton {{
+                background-color: {hex_color};
+                color: black;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+        """
+        
+        
     def create_graph(self, title, series_input):
         chart = QChart()
         chart.setTitle(title)
@@ -132,20 +227,15 @@ class RoverDash(QMainWindow):
         view.setRenderHint(view.renderHints().Antialiasing)
         return view
     
-    def process_can_data(self, arb_id, info, data):
+    
+    def process_can_data(self, info, data):
+        #WORK IN PROGRESS
         dev_id = info['dev_id']
         idx = info['index']
         cls = info['class']
-        
-        # 1. Update Motor Status (Heartbeat)
-        if cls == 63:   #heartbeat
-            if dev_id in self.motor_buttons:
-                self.motor_buttons[dev_id].setStyleSheet(self.get_style("green"))
-        
-        # 2. Update Graphs
+
         if cls == 1:
             if idx == 3 and dev_id == 6 and len(data) >= 1: # Temperature
-                # If data is a float, use: struct.unpack('<f', bytes(data[0:4]))[0]
                 val = data[0] 
                 self.series_temp.append(self.data_count, val)
                 self.data_count += 1
@@ -161,6 +251,13 @@ class RoverDash(QMainWindow):
                 new_min, new_max = self.data_count - 100, self.data_count
                 self.chart_temp_view.chart().axisX().setRange(new_min, new_max)
                 self.chart_currVol_view.chart().axisX().setRange(new_min, new_max)
+
+    def closeEvent(self, event):
+        self.worker.stop()      # tell worker loop to exit
+        self.thread.quit()      # stop event loop
+        self.thread.wait()      # wait for thread to finish
+
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
