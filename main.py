@@ -1,15 +1,13 @@
 import sys
 import can
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QGridLayout)
-from PySide6.QtCore import QThread, Qt, Signal, QObject, QTimer
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget, QVBoxLayout, 
+                             QPushButton, QGridLayout)
+from PySide6.QtCore import QThread, Signal, QObject, QTimer
 
 #this commworker handles all of the CAN communication. 
 class CommWorker(QObject):
     error_status = Signal(int, int)
-    telemetry_received = Signal(dict, list)
+    volcurr = Signal(int,int)
 
     def run(self):     
         try:
@@ -25,7 +23,7 @@ class CommWorker(QObject):
 
             bus = can.interface.Bus(
                 interface='slcan',
-                channel='/dev/tty.usbmodemXXXX',
+                channel='rover-test',
                 bitrate=1000000,
                 filters=filters
             )
@@ -48,12 +46,16 @@ class CommWorker(QObject):
                 "manu":   (can_id >> 16) & 0xFF,
                 "type":   (can_id >> 24) & 0x1F,
             }
-            
-            if info["class"] == 61:
-                if info["index"] == 0:  #error class is 61, index 0 (from ref sheet)
+
+            if info["class"] == 61:     #error
+                if info["index"] == 0:  #index 0 means error code is payload(from ref sheet)
                     error_code = msg.data[0]    #looks like the message sends error code (error code is mapped to LEDs in ref.)
                     self.error_status.emit(info["dev_id"], error_code) #sends values to update_led_status
-            self.telemetry_received.emit(info, list(msg.data))
+            elif info["class"] == 1:  #telem
+                if info["index"] == 4:  #volcurr
+                    vol = msg.data[2]      #assume 2 bytes. confirm on tuesday when at sparky.
+                    self.volcurr.emit(info["dev_id"],vol)
+
     def stop(self):
             self.running = False
             
@@ -73,54 +75,92 @@ LED_MAP = {
 class RoverDash(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Sparky - Health Monitor")
+        self.setWindowTitle("YURS SPARKY DigitalDash")
         self.resize(1024, 600)
         self.setStyleSheet("background-color: #0f0f0f; color: white;")
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
 
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
 
-        # --- LEFT SIDE: MOTOR STATUS ---
-        left_column = QVBoxLayout()
-        self.motor_grid = QGridLayout()
-        self.motor_buttons = {}
+        # ---  MOTOR STATUS ---
+        self.motor_buttons={}
+        status_grid = QGridLayout()
+
+        #0 2 3 4 5 are DRIVE axis
+        status_grid.addWidget(QLabel("Drive Motors"), 0, 0, 1, 6)
+
+        axis0 = QPushButton(f"axis0")
+        status_grid.addWidget(axis0,1,0)
+        self.motor_buttons[0] = axis0
+
         
-        for i in range(12): #create buttons btn1 - 12
-            dev_id = i + 1
-            btn = QPushButton(f"axis{dev_id}")
-            btn.setFixedSize(60, 60)
-            # btn.setStyleSheet(self.get_style("red")) # Default to red until heartbeat
-            self.motor_grid.addWidget(btn, i // 4, i % 4)
-            self.motor_buttons[dev_id] = btn
+        axis2 = QPushButton(f"axis2")
+        status_grid.addWidget(axis2,1,1)
+        self.motor_buttons[2] = axis2
 
+        axis3 = QPushButton(f"axis3")
+        status_grid.addWidget(axis3,1,2)
+        self.motor_buttons[3] = axis3
 
-        left_column.addLayout(self.motor_grid)
-        main_layout.addLayout(left_column, 1)
+        axis4 = QPushButton(f"axis4")
+        status_grid.addWidget(axis4,1,3)
+        self.motor_buttons[4] = axis4
 
-        # --- RIGHT SIDE: GRAPHS ---
-        graph_column = QVBoxLayout()
-        self.chart_grid = QGridLayout()
-        self.series_temp = QLineSeries()
-        self.chart_temp_view = self.create_graph("Temp (Â°C)", self.series_temp)
-        self.chart_grid.addWidget(self.chart_temp_view)
+        axis5 = QPushButton(f"axis5")
+        status_grid.addWidget(axis5,1,4)
+        self.motor_buttons[5] = axis5
+        
+        #ARM axis' are 6 7 8
 
-        self.series_current = QLineSeries()  #cv represents current - voltage
-        self.series_current.setName("Current (A)")
-        self.series_current.setColor(QColor("#00e5ff")) # Cyan-ish for current
+        status_grid.addWidget(QLabel("ARMs"), 2, 0, 1, 6)
 
-        self.series_voltage = QLineSeries()
-        self.series_voltage.setName("Voltage (V))")
-        self.series_voltage.setColor(QColor("#dc300e")) # red-ish for voltage
+        axis6 = QPushButton(f"axis6")
+        status_grid.addWidget(axis6,3,0)
+        self.motor_buttons[6] = axis6
 
-        self.chart_currVol_view = self.create_graph("Current & Voltage", [self.series_voltage, self.series_current])
-        self.chart_grid.addWidget(self.chart_currVol_view)  
+        axis7 = QPushButton(f"axis7")
+        status_grid.addWidget(axis7,3,1)
+        self.motor_buttons[7] = axis7
 
-        graph_column.addLayout(self.chart_grid)
-        main_layout.addLayout(graph_column, 2)
+        axis8 = QPushButton(f"axis8")
+        status_grid.addWidget(axis8,3,2)
+        self.motor_buttons[8] = axis8
 
-        self.data_count = 0
+        #GRIPPER 9 10 11 12
+        status_grid.addWidget(QLabel("Grippers"), 4, 0, 1, 6)
+
+        axis9 = QPushButton(f"axis9")
+        status_grid.addWidget(axis9,5,0)
+        self.motor_buttons[9] = axis9
+
+        axis10 = QPushButton(f"axis10")
+        status_grid.addWidget(axis10,5,1)
+        self.motor_buttons[10] = axis10
+
+        axis11 = QPushButton(f"axis11")
+        status_grid.addWidget(axis11,5,2)
+        self.motor_buttons[11] = axis11
+
+        axis12 = QPushButton(f"axis12")
+        status_grid.addWidget(axis12,5,3)
+        self.motor_buttons[12] = axis12
+        
+
+        #SCIENCE 13 14
+        status_grid.addWidget(QLabel("Science"), 6, 0, 1, 6)
+
+        axis13 = QPushButton(f"axis13")
+        status_grid.addWidget(axis13,7,0)
+        self.motor_buttons[13] = axis13
+
+        axis14 = QPushButton(f"axis14")
+        status_grid.addWidget(axis14,7,1)
+        self.motor_buttons[14] = axis14
+
+        main_layout.addLayout(status_grid)
 
         # --- WORKER THREAD ---
         self.worker = CommWorker()
@@ -131,16 +171,17 @@ class RoverDash(QMainWindow):
         self.thread.started.connect(self.worker.run)
 
         self.worker.error_status.connect(self.update_led_status)
-        self.worker.telemetry_received.connect(self.process_can_data)
+        self.worker.volcurr.connect(self.update_volcurr)
 
         self.button_states = {}
         self.blink_timers = {}
+        self.voltages = {}
 
         self.thread.start()
 
         # --- LOGIC ---
         
-   
+    
     def update_led_status(self, dev_id, error_code):
             color1, color2, speed = LED_MAP.get(error_code, ("red", None, "solid"))
 
@@ -200,58 +241,16 @@ class RoverDash(QMainWindow):
                 font-weight: bold;
             }}
         """
-        
-        
-    def create_graph(self, title, series_input):
-        chart = QChart()
-        chart.setTitle(title)
-        chart.setTheme(QChart.ChartThemeDark)
-        
-        # Ensure we are working with a list even if one series is passed
-        series_list = series_input if isinstance(series_input, list) else [series_input]
-        
-        axis_x = QValueAxis()
-        axis_x.setRange(0, 100)
-        chart.addAxis(axis_x, Qt.AlignBottom)
-
-        axis_y = QValueAxis()
-        axis_y.setRange(0, 100) # Adjust based on your battery/motor limits
-        chart.addAxis(axis_y, Qt.AlignLeft)
-
-        for s in series_list:
-            chart.addSeries(s)
-            s.attachAxis(axis_x)
-            s.attachAxis(axis_y)
-
-        view = QChartView(chart)
-        view.setRenderHint(view.renderHints().Antialiasing)
-        return view
     
+    def update_volcurr(self, dev_id, vol):
+        btn = self.motor_buttons.get(dev_id)
+        self.voltages[dev_id] = vol
+        if btn is None:
+            return
+        
+        btn.setText(f"axis{dev_id}\n{vol}V")
+
     
-    def process_can_data(self, info, data):
-        #WORK IN PROGRESS
-        dev_id = info['dev_id']
-        idx = info['index']
-        cls = info['class']
-
-        if cls == 1:
-            if idx == 3 and dev_id == 6 and len(data) >= 1: # Temperature
-                val = data[0] 
-                self.series_temp.append(self.data_count, val)
-                self.data_count += 1
-            if idx==4 and dev_id == 6 and len(data)>=1: #current Voltage
-                vol=data[0]
-                amp=data[1]
-                self.series_current.append(self.data_count, vol)
-                self.series_voltage.append(self.data_count, amp)
-
-            #Auto-scroll & Increment X-Axis
-            self.data_count += 1
-            if self.data_count > 100:
-                new_min, new_max = self.data_count - 100, self.data_count
-                self.chart_temp_view.chart().axisX().setRange(new_min, new_max)
-                self.chart_currVol_view.chart().axisX().setRange(new_min, new_max)
-
     def closeEvent(self, event):
         self.worker.stop()      # tell worker loop to exit
         self.thread.quit()      # stop event loop
