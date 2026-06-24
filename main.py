@@ -53,7 +53,9 @@ class CommWorker(QObject):
                     self.error_status.emit(info["dev_id"], error_code) #sends values to update_led_status
             elif info["class"] == 1:  #telem
                 if info["index"] == 4:  #volcurr
-                    vol = msg.data[2]      #assume 2 bytes. confirm on tuesday when at sparky.
+                    volp1 = msg.data[0]
+                    volp2 = msg.data[1]
+                    vol = (volp2<<8) | (volp1)  #MSB Little-Endian Concatenation
                     self.volcurr.emit(info["dev_id"],vol)
 
     def stop(self):
