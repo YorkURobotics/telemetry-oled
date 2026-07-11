@@ -1,13 +1,13 @@
 import sys
 import can
-from PySide6.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget, QVBoxLayout, 
+import time
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QGridLayout)
 from PySide6.QtCore import QThread, Signal, QObject, QTimer
 
 #this commworker handles all of the CAN communication. 
 class CommWorker(QObject):
-    error_status = Signal(int, int)
-    volcurr = Signal(int,int)
+    package = Signal(int, int,str)
 
     def run(self):     
         try:
@@ -50,18 +50,63 @@ class CommWorker(QObject):
             if info["class"] == 61:     #error
                 if info["index"] == 0:  #index 0 means error code is payload(from ref sheet)
                     error_code = msg.data[0]    #looks like the message sends error code (error code is mapped to LEDs in ref.)
-                    self.error_status.emit(info["dev_id"], error_code) #sends values to update_led_status
+                    self.package.emit(info["dev_id"], error_code,"Error") #sends values to update_led_status
             elif info["class"] == 1:  #telem
                 if info["index"] == 4:  #volcurr
                     volp1 = msg.data[0]
                     volp2 = msg.data[1]
                     vol = (volp2<<8) | (volp1)  #MSB Little-Endian Concatenation
-                    self.volcurr.emit(info["dev_id"],vol)
+                    self.package.emit(info["dev_id"],vol,"Voltage")
 
     def stop(self):
             self.running = False
-            
+#this FakeWorker is a testing unit. see CANTesterUnit.py
+class FakeWorker(QObject):
+    package = Signal(int, int, str)
 
+    def run(self):
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.send)
+        self.timer.start(1000)
+
+        self.count = 0
+
+    def send(self):
+        self.count += 1
+        self.package.emit(1, 1220 + self.count, "Voltage")
+        self.package.emit(7, 1200 + self.count, "Voltage")
+        self.package.emit(6, 1180 + self.count, "Voltage")
+        self.package.emit(9, 1220 + self.count, "Voltage")
+        error = (self.count % 9) + 1
+        self.package.emit(6, 7, "Error")
+        self.package.emit(8, 7, "Error")
+        self.package.emit(11, 7, "Error")
+        self.package.emit(4, 7, "Error")
+        self.package.emit(2, 2, "Error")            #tested :)
+
+    def stop(self):
+        self.timer.stop()
+#which button is where?     
+button_positions = {
+    0: (1, 0),
+    2: (1, 1),
+    3: (1, 2),
+    4: (1, 3),
+    5: (1, 4),
+
+    6: (3, 0),
+    7: (3, 1),
+    8: (3, 2),
+
+    9: (5, 0),
+    10: (5, 1),
+    11: (5, 2),
+    12: (5, 3),
+
+    13: (7, 0),
+    14: (7, 1),
+}
+#Cartier
 LED_MAP = {
     1: ("red", "blue", "slow"),
     2: ("red", "cyan", "slow"),
@@ -74,10 +119,11 @@ LED_MAP = {
     9: ("green", "green", "normal"),
 }
 
+
 class RoverDash(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("YURS SPARKY DigitalDash")
+        self.setWindowTitle("YURS SPARKY 2026 telemoled")
         self.resize(1024, 600)
         self.setStyleSheet("background-color: #0f0f0f; color: white;")
 
@@ -87,93 +133,25 @@ class RoverDash(QMainWindow):
         main_layout = QVBoxLayout()
         central_widget.setLayout(main_layout)
 
-        # ---  MOTOR STATUS ---
-        self.motor_buttons={}
-        status_grid = QGridLayout()
+        self.status_grid = QGridLayout()
+        self.motor_buttons = {}
+        # --- MOTOR DEFs ---
+        for dev_id, position in button_positions.items():
+            btn = QPushButton(f"axis{dev_id}")
+            self.status_grid.addWidget(btn, *position)
+            self.motor_buttons[dev_id] = btn
 
-        #0 2 3 4 5 are DRIVE axis
-        status_grid.addWidget(QLabel("Drive Motors"), 0, 0, 1, 6)
-
-        axis0 = QPushButton(f"axis0")
-        status_grid.addWidget(axis0,1,0)
-        self.motor_buttons[0] = axis0
-
-        
-        axis2 = QPushButton(f"axis2")
-        status_grid.addWidget(axis2,1,1)
-        self.motor_buttons[2] = axis2
-
-        axis3 = QPushButton(f"axis3")
-        status_grid.addWidget(axis3,1,2)
-        self.motor_buttons[3] = axis3
-
-        axis4 = QPushButton(f"axis4")
-        status_grid.addWidget(axis4,1,3)
-        self.motor_buttons[4] = axis4
-
-        axis5 = QPushButton(f"axis5")
-        status_grid.addWidget(axis5,1,4)
-        self.motor_buttons[5] = axis5
-        
-        #ARM axis' are 6 7 8
-
-        status_grid.addWidget(QLabel("ARMs"), 2, 0, 1, 6)
-
-        axis6 = QPushButton(f"axis6")
-        status_grid.addWidget(axis6,3,0)
-        self.motor_buttons[6] = axis6
-
-        axis7 = QPushButton(f"axis7")
-        status_grid.addWidget(axis7,3,1)
-        self.motor_buttons[7] = axis7
-
-        axis8 = QPushButton(f"axis8")
-        status_grid.addWidget(axis8,3,2)
-        self.motor_buttons[8] = axis8
-
-        #GRIPPER 9 10 11 12
-        status_grid.addWidget(QLabel("Grippers"), 4, 0, 1, 6)
-
-        axis9 = QPushButton(f"axis9")
-        status_grid.addWidget(axis9,5,0)
-        self.motor_buttons[9] = axis9
-
-        axis10 = QPushButton(f"axis10")
-        status_grid.addWidget(axis10,5,1)
-        self.motor_buttons[10] = axis10
-
-        axis11 = QPushButton(f"axis11")
-        status_grid.addWidget(axis11,5,2)
-        self.motor_buttons[11] = axis11
-
-        axis12 = QPushButton(f"axis12")
-        status_grid.addWidget(axis12,5,3)
-        self.motor_buttons[12] = axis12
-        
-
-        #SCIENCE 13 14
-        status_grid.addWidget(QLabel("Science"), 6, 0, 1, 6)
-
-        axis13 = QPushButton(f"axis13")
-        status_grid.addWidget(axis13,7,0)
-        self.motor_buttons[13] = axis13
-
-        axis14 = QPushButton(f"axis14")
-        status_grid.addWidget(axis14,7,1)
-        self.motor_buttons[14] = axis14
-
-        main_layout.addLayout(status_grid)
+        main_layout.addLayout(self.status_grid)
 
         # --- WORKER THREAD ---
-        self.worker = CommWorker()
+        self.worker = FakeWorker()
         self.thread = QThread()
 
         self.worker.moveToThread(self.thread)
 
         self.thread.started.connect(self.worker.run)
 
-        self.worker.error_status.connect(self.update_led_status)
-        self.worker.volcurr.connect(self.update_volcurr)
+        self.worker.package.connect(self.package_received)
 
         self.button_states = {}
         self.blink_timers = {}
@@ -182,83 +160,87 @@ class RoverDash(QMainWindow):
         self.thread.start()
 
         # --- LOGIC ---
-        
-    
-    def update_led_status(self, dev_id, error_code):
-            color1, color2, speed = LED_MAP.get(error_code, ("red", None, "solid"))
-
-            btn = self.motor_buttons.get(dev_id)
-            if btn is None:
-                return
-
-            if dev_id in self.blink_timers:
-                self.blink_timers[dev_id].stop()
-                del self.blink_timers[dev_id]
-
-            if speed == "solid" or color2 is None:
-                btn.setStyleSheet(self.get_style(color1))
-                return
-
-            intervals = {
-                "normal": 250,
-                "slow": 500,
-            }
-
-            interval = intervals.get(speed, 500)
-
-            state = 1
-            
-            def blink():
-                nonlocal state
-                state = not state
-
-                color = color1 if state else color2
-                btn.setStyleSheet(self.get_style(color))
-
-            timer = QTimer(self)
-            timer.timeout.connect(blink)
-            timer.start(interval)
-
-            self.blink_timers[dev_id] = timer
-            blink()
-
     def get_style(self, color):
-        colors = {
-            "red": "#ff3333",
-            "green": "#00ff88",
-            "blue": "#3399ff",
-            "cyan": "#00e5ff",
-            "magenta": "#ff33cc",
-            "yellow": "#ffff33",
-            "off": "#222222",
-        }
+            colors = {
+                "red": "#ff3333",
+                "green": "#00ff88",
+                "blue": "#3399ff",
+                "cyan": "#00e5ff",
+                "magenta": "#ff33cc",
+                "yellow": "#ffff33",
+                "off": "#222222",
+            }
+            hex_color = colors.get(color, "#ff3333")
+            return f"""
+            QPushButton {{
+                    background-color: {hex_color};
+                    color: black; 
+                    border-radius: 8px;
+                    font-weight: bold;
+                }} """
 
-        hex_color = colors.get(color, "#ff3333")
+    def package_received(self, dev_id, value, type):
+        if (type == "Error"):
+                    color1, color2, speed = LED_MAP.get(value, ("red", None, "solid"))
 
-        return f"""
-        QPushButton {{
-                background-color: {hex_color};
-                color: black;
-                border-radius: 8px;
-                font-weight: bold;
-            }}
-        """
+                    btn = self.motor_buttons.get(dev_id)
+                    if btn is None:
+                        return
+
+                    if dev_id in self.blink_timers:
+                        self.blink_timers[dev_id].stop()
+                        del self.blink_timers[dev_id]
+
+                    if speed == "solid" or color2 is None:
+                        btn.setStyleSheet(self.get_style(color1))
+                        return
+
+                    intervals = {
+                        "normal": 250,
+                        "slow": 500,
+                    }
+
+                    interval = intervals.get(speed, 500)
+
+                    state = 1
+                    
+                    def blink():
+                        nonlocal state
+                        state = not state
+
+                        color = color1 if state else color2
+                        btn.setStyleSheet(self.get_style(color))
+
+                    timer = QTimer(self)
+                    timer.timeout.connect(blink)
+                    timer.start(interval)
+
+                    self.blink_timers[dev_id] = timer
+                    blink()
+
     
-    def update_volcurr(self, dev_id, vol):
-        btn = self.motor_buttons.get(dev_id)
-        self.voltages[dev_id] = vol
-        if btn is None:
-            return
+                    
+        if (type == "Voltage"):
+                btn = self.motor_buttons.get(dev_id)
+                self.voltages[dev_id] = value
+                if btn is None:
+                    return
+                if dev_id <= 5:
+                    btn.setText(f"axis{dev_id} DRIVE MOTOR\n{value} V")
+                if 6 <= dev_id <= 8:
+                    btn.setText(f"axis{dev_id} ARMS! \n{value} V")
+                if 9 <= dev_id <= 12:
+                    btn.setText(f"axis{dev_id} GRIPPERS ;) \n{value} V")
+                if 13 <= dev_id <= 14:
+                    btn.setText(f"axis{dev_id}--- SCIENCE ---! \n{value} V")
+
         
-        btn.setText(f"axis{dev_id}\n{vol}V")
-
-    
     def closeEvent(self, event):
-        self.worker.stop()      # tell worker loop to exit
-        self.thread.quit()      # stop event loop
-        self.thread.wait()      # wait for thread to finish
+            self.worker.stop()      # tell worker loop to exit
+            self.thread.quit()      # stop event loop
+            self.thread.wait()      # wait for thread to finish
 
-        event.accept()
+            event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
