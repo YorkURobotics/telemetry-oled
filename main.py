@@ -1,6 +1,5 @@
 import sys
 import can
-import time
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QGridLayout)
 from PySide6.QtCore import QThread, Signal, QObject, QTimer
